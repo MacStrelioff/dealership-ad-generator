@@ -1,7 +1,22 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Vehicle, ScrapedInventory, AdScript, AdType } from '@/types';
+
+interface VideoModel {
+  id: string;
+  name: string;
+  description: string;
+}
+
+interface VideoJob {
+  scriptIndex: number;
+  id: string;
+  model: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  videoUrl?: string;
+  error?: string;
+}
 
 const AD_TYPE_OPTIONS: { value: AdType; label: string; icon: string }[] = [
   { value: 'video_youtube', label: 'YouTube Video', icon: '📺' },
@@ -23,6 +38,49 @@ export default function Home() {
   const [scripts, setScripts] = useState<AdScript[]>([]);
   const [generating, setGenerating] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  
+  // Video generation state
+  const [videoModels, setVideoModels] = useState<VideoModel[]>([]);
+  const [selectedVideoModel, setSelectedVideoModel] = useState<string>('sora-2-text-to-video');
+  const [videoJobs, setVideoJobs] = useState<VideoJob[]>([]);
+  const [generatingVideo, setGeneratingVideo] = useState<number | null>(null);
+
+  // Fetch video models on mount
+  useEffect(() => {
+    fetch('/api/video')
+      .then(res => res.json())
+      .then(data => {
+        if (data.models) {
+          setVideoModels(data.models);
+        }
+      })
+      .catch(console.error);
+  }, []);
+
+  // Poll for video status
+  useEffect(() => {
+    const pendingJobs = videoJobs.filter(j => j.status === 'queued' || j.status === 'processing');
+    if (pendingJobs.length === 0) return;
+
+    const interval = setInterval(async () => {
+      for (const job of pendingJobs) {
+        try {
+          const res = await fetch(`/api/video/status?id=${job.id}&model=${encodeURIComponent(job.model)}`);
+          const data = await res.json();
+          
+          setVideoJobs(prev => prev.map(j => 
+            j.id === job.id 
+              ? { ...j, status: data.status, videoUrl: data.videoUrl, error: data.error }
+              : j
+          ));
+        } catch (err) {
+          console.error('Error polling video status:', err);
+        }
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [videoJobs]);
 
   const handleScrape = async () => {
     if (!url) return;
@@ -105,6 +163,46 @@ export default function Home() {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
+  };
+
+  const handleGenerateVideo = async (scriptIndex: number, script: AdScript) => {
+    setGeneratingVideo(scriptIndex);
+    
+    try {
+      // Create a video-friendly prompt from the script
+      const videoPrompt = `Create a professional car dealership advertisement video: ${script.script.substring(0, 500)}`;
+      
+      const response = await fetch('/api/video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: videoPrompt,
+          model: selectedVideoModel,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to start video generation');
+      }
+
+      // Add to video jobs
+      setVideoJobs(prev => [...prev, {
+        scriptIndex,
+        id: data.id,
+        model: selectedVideoModel,
+        status: 'queued',
+      }]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to generate video');
+    } finally {
+      setGeneratingVideo(null);
+    }
+  };
+
+  const getVideoJobForScript = (index: number) => {
+    return videoJobs.find(j => j.scriptIndex === index);
   };
 
   return (
@@ -278,42 +376,148 @@ export default function Home() {
         {/* Generated Scripts */}
         {scripts.length > 0 && (
           <section className="bg-slate-800/50 rounded-2xl p-6 border border-slate-700">
-            <h2 className="text-xl font-semibold text-white mb-6">
-              ✨ Generated Ad Scripts
-            </h2>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-semibold text-white">
+                ✨ Generated Ad Scripts
+              </h2>
+              
+              {/* Video Model Selector */}
+              {videoModels.length > 0 && (
+                <div className="flex items-center gap-3">
+                  <label className="text-slate-400 text-sm">Video Model:</label>
+                  <select
+                    value={selectedVideoModel}
+                    onChange={(e) => setSelectedVideoModel(e.target.value)}
+                    className="px-3 py-2 rounded-lg bg-slate-900 border border-slate-600 text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    {videoModels.map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
 
             <div className="space-y-6">
-              {scripts.map((script, index) => (
-                <div
-                  key={index}
-                  className="bg-slate-900/50 rounded-xl p-6 border border-slate-600"
-                >
-                  <div className="flex items-start justify-between mb-4">
-                    <div>
-                      <h3 className="text-lg font-semibold text-white">
-                        {script.title}
-                      </h3>
-                      <div className="flex gap-4 mt-1">
-                        <span className="text-sm text-blue-400">
-                          🎯 {script.targetAudience}
-                        </span>
-                        <span className="text-sm text-purple-400">
-                          🎨 {script.tone}
-                        </span>
+              {scripts.map((script, index) => {
+                const videoJob = getVideoJobForScript(index);
+                
+                return (
+                  <div
+                    key={index}
+                    className="bg-slate-900/50 rounded-xl p-6 border border-slate-600"
+                  >
+                    <div className="flex items-start justify-between mb-4">
+                      <div>
+                        <h3 className="text-lg font-semibold text-white">
+                          {script.title}
+                        </h3>
+                        <div className="flex gap-4 mt-1">
+                          <span className="text-sm text-blue-400">
+                            🎯 {script.targetAudience}
+                          </span>
+                          <span className="text-sm text-purple-400">
+                            🎨 {script.tone}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => copyToClipboard(script.script)}
+                          className="px-3 py-1 text-sm bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors"
+                        >
+                          📋 Copy
+                        </button>
                       </div>
                     </div>
-                    <button
-                      onClick={() => copyToClipboard(script.script)}
-                      className="px-3 py-1 text-sm bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors"
-                    >
-                      📋 Copy
-                    </button>
+                    
+                    <div className="bg-slate-800 rounded-lg p-4 whitespace-pre-wrap text-slate-200 font-mono text-sm leading-relaxed mb-4">
+                      {script.script}
+                    </div>
+
+                    {/* Video Generation Section */}
+                    <div className="border-t border-slate-700 pt-4">
+                      {!videoJob ? (
+                        <button
+                          onClick={() => handleGenerateVideo(index, script)}
+                          disabled={generatingVideo === index}
+                          className="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:from-slate-600 disabled:to-slate-600 text-white font-medium rounded-lg transition-all flex items-center gap-2"
+                        >
+                          {generatingVideo === index ? (
+                            <>
+                              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                              </svg>
+                              Starting...
+                            </>
+                          ) : (
+                            <>🎬 Generate Video Ad</>
+                          )}
+                        </button>
+                      ) : (
+                        <div className="flex items-center gap-4">
+                          {videoJob.status === 'queued' && (
+                            <div className="flex items-center gap-2 text-yellow-400">
+                              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                              </svg>
+                              <span>Queued...</span>
+                            </div>
+                          )}
+                          {videoJob.status === 'processing' && (
+                            <div className="flex items-center gap-2 text-blue-400">
+                              <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                              </svg>
+                              <span>Generating video... This may take a few minutes.</span>
+                            </div>
+                          )}
+                          {videoJob.status === 'completed' && videoJob.videoUrl && (
+                            <div className="flex items-center gap-4">
+                              <span className="text-green-400">✅ Video Ready!</span>
+                              <a
+                                href={videoJob.videoUrl}
+                                download
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors flex items-center gap-2"
+                              >
+                                ⬇️ Download Video
+                              </a>
+                              <a
+                                href={videoJob.videoUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white font-medium rounded-lg transition-colors"
+                              >
+                                👁️ Preview
+                              </a>
+                            </div>
+                          )}
+                          {videoJob.status === 'failed' && (
+                            <div className="flex items-center gap-4">
+                              <span className="text-red-400">❌ Failed: {videoJob.error || 'Unknown error'}</span>
+                              <button
+                                onClick={() => {
+                                  setVideoJobs(prev => prev.filter(j => j.id !== videoJob.id));
+                                }}
+                                className="px-3 py-1 text-sm bg-slate-700 hover:bg-slate-600 text-white rounded-lg"
+                              >
+                                Try Again
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div className="bg-slate-800 rounded-lg p-4 whitespace-pre-wrap text-slate-200 font-mono text-sm leading-relaxed">
-                    {script.script}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         )}

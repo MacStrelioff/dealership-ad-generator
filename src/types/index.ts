@@ -57,3 +57,38 @@ export interface GenerateScriptsResponse {
   scripts: AdScript[];
   vehicle: Vehicle;
 }
+
+// Video Generation Types
+export type VideoModel = 
+  | 'wan-21-t2v-13b'
+  | 'kling-2.1-pro'
+  | 'veo-2'
+  | 'minimax-video-01';
+
+export interface VideoModelInfo {
+  id: VideoModel;
+  name: string;
+  description: string;
+  duration: string;
+  isPrivate: boolean;
+}
+
+export interface VideoGenerateRequest {
+  prompt: string;
+  model: VideoModel;
+  duration?: number;
+}
+
+export interface VideoGenerateResponse {
+  id: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  videoUrl?: string;
+  error?: string;
+}
+
+export interface VideoStatusResponse {
+  id: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed';
+  videoUrl?: string;
+  error?: string;
+}
